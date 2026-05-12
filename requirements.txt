@@ -2,8 +2,4 @@ requests
 beautifulsoup4
 flask
 flask-cors
-schedule
-python-dotenv
 gunicorn
-psycopg2-binary
-peewee
