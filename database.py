@@ -1,24 +1,28 @@
 """
 JobHunter AI - Database
-Auto-detects PostgreSQL or SQLite based on DATABASE_URL env var.
+Uses PostgreSQL (Supabase) in production, SQLite locally.
 """
 import os
 from datetime import datetime
 from peewee import Model, CharField, TextField, BooleanField, DateTimeField, AutoField, SqliteDatabase, PostgresqlDatabase
-from urllib.parse import urlparse
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Read individual connection params (avoids URL encoding issues with @ in password)
+DB_HOST = os.getenv("DB_HOST", "")
+DB_NAME = os.getenv("DB_NAME", "postgres")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
 
-if DATABASE_URL:
-    url = urlparse(DATABASE_URL)
+if DB_HOST:
     db = PostgresqlDatabase(
-        url.path[1:],
-        user=url.username,
-        password=url.password,
-        host=url.hostname,
-        port=url.port or 5432,
+        DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+        host=DB_HOST,
+        port=DB_PORT,
+        sslmode="require",
     )
-    print(f"Using PostgreSQL at {url.hostname}")
+    print(f"Using PostgreSQL at {DB_HOST}")
 else:
     db = SqliteDatabase("jobs.db")
     print("Using SQLite locally")
@@ -54,7 +58,6 @@ class Job(BaseModel):
             "sponsorship": self.sponsorship, "category": self.category,
             "company_size": self.company_size, "apply_url": self.apply_url,
             "posted_at": self.posted_at.isoformat(),
-            "description": getattr(self, '_description', ''),
         }
 
 def init_db():
