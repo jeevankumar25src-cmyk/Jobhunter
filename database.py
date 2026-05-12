@@ -1,17 +1,27 @@
 """
 JobHunter AI - Database
-Uses PostgreSQL (Supabase) in production, SQLite locally.
+Auto-detects PostgreSQL or SQLite based on DATABASE_URL env var.
 """
 import os
 from datetime import datetime
-from peewee import Model, CharField, TextField, BooleanField, DateTimeField, AutoField
-from playhouse.db_url import connect
+from peewee import Model, CharField, TextField, BooleanField, DateTimeField, AutoField, SqliteDatabase, PostgresqlDatabase
+from urllib.parse import urlparse
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///jobs.db")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-db = connect(DATABASE_URL)
+if DATABASE_URL:
+    url = urlparse(DATABASE_URL)
+    db = PostgresqlDatabase(
+        url.path[1:],
+        user=url.username,
+        password=url.password,
+        host=url.hostname,
+        port=url.port or 5432,
+    )
+    print(f"Using PostgreSQL at {url.hostname}")
+else:
+    db = SqliteDatabase("jobs.db")
+    print("Using SQLite locally")
 
 class BaseModel(Model):
     class Meta:
@@ -44,12 +54,13 @@ class Job(BaseModel):
             "sponsorship": self.sponsorship, "category": self.category,
             "company_size": self.company_size, "apply_url": self.apply_url,
             "posted_at": self.posted_at.isoformat(),
+            "description": getattr(self, '_description', ''),
         }
 
 def init_db():
     with db:
         db.create_tables([Job], safe=True)
-    print(f"Database ready!")
+    print("Database ready!")
 
 def get_jobs(keyword="", location="", remote="", sponsorship=None, category="", page=1, per_page=20):
     query = Job.select().order_by(Job.posted_at.desc())
