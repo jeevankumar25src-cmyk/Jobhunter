@@ -1,9 +1,9 @@
 """
-JobHunter AI - API v7
-Includes enterprise companies for .NET, Java, ServiceNow, SAP etc.
-Parallel fetching. No database needed.
+JobHunter AI - API v8
+Uses JSearch API (LinkedIn+Indeed+Glassdoor) for broad job coverage.
+Falls back to Greenhouse/Lever for specific companies.
 """
-import requests, hashlib, time
+import requests, hashlib, time, os
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, request
@@ -14,16 +14,18 @@ app = Flask(__name__)
 CORS(app)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
     "Accept": "application/json",
 }
 
-_cache = {"jobs": [], "time": 0}
-CACHE_TTL = 120
+# JSearch API key - get free at rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
+JSEARCH_KEY = os.getenv("JSEARCH_KEY", "")
 
-# Mix of tech, enterprise, consulting companies
+_cache = {"jobs": [], "time": 0}
+CACHE_TTL = 300  # 5 minutes
+
+# Company job boards (fast, reliable)
 COMPANIES = [
-    # Big Tech
     ("gh","airbnb","Airbnb","Big Tech"),
     ("gh","stripe","Stripe","Big Tech"),
     ("gh","databricks","Databricks","Big Tech"),
@@ -33,80 +35,72 @@ COMPANIES = [
     ("gh","hubspot","HubSpot","Big Tech"),
     ("gh","datadog","Datadog","Big Tech"),
     ("gh","mongodb","MongoDB","Big Tech"),
-    ("gh","gitlab","GitLab","Big Tech"),
     ("gh","zoom","Zoom","Big Tech"),
     ("gh","squarespace","Squarespace","Big Tech"),
-    ("gh","procore","Procore","Big Tech"),
     ("gh","toast","Toast","Big Tech"),
     ("gh","twilio","Twilio","Big Tech"),
     ("gh","okta","Okta","Big Tech"),
-    ("gh","zendesk","Zendesk","Big Tech"),
-    ("gh","dropbox","Dropbox","Big Tech"),
-    ("gh","lyft","Lyft","Big Tech"),
-    # Startups
     ("gh","anthropic","Anthropic","Startups"),
     ("gh","gusto","Gusto","Startups"),
     ("gh","airtable","Airtable","Startups"),
-    ("gh","vanta","Vanta","Startups"),
     ("gh","webflow","Webflow","Startups"),
     ("gh","miro","Miro","Startups"),
-    ("gh","loom","Loom","Startups"),
-    ("gh","postman","Postman","Startups"),
-    ("gh","lattice","Lattice","Startups"),
-    # Finance
     ("gh","chime","Chime","Finance"),
     ("gh","affirm","Affirm","Finance"),
     ("gh","robinhood","Robinhood","Finance"),
-    ("gh","coinbase","Coinbase","Finance"),
-    ("gh","marqeta","Marqeta","Finance"),
-    # Healthcare
     ("gh","oscar","Oscar Health","Healthcare"),
     ("gh","springhealth","Spring Health","Healthcare"),
-    ("gh","modernhealth","Modern Health","Healthcare"),
-    # Lever companies
     ("lv","openai","OpenAI","Startups"),
     ("lv","notion","Notion","Startups"),
     ("lv","rippling","Rippling","Startups"),
     ("lv","scale-ai","Scale AI","Startups"),
-    ("lv","deel","Deel","Startups"),
     ("lv","mercury","Mercury","Finance"),
-    ("lv","brex","Brex","Finance"),
     ("lv","ramp","Ramp","Finance"),
+    ("lv","brex","Brex","Finance"),
     ("lv","sentry","Sentry","Big Tech"),
     ("lv","drata","Drata","Startups"),
 ]
 
-# Enterprise/consulting companies via direct job board APIs
-ENTERPRISE_SEARCHES = [
-    # These use Indeed-style keyword searches
-    {"keyword": ".NET developer", "category": "Enterprise"},
-    {"keyword": "Java developer", "category": "Enterprise"},
-    {"keyword": "ServiceNow developer", "category": "Enterprise"},
-    {"keyword": "SAP consultant", "category": "Enterprise"},
-    {"keyword": "Data Analyst", "category": "Enterprise"},
-    {"keyword": "Business Analyst", "category": "Enterprise"},
-    {"keyword": "Salesforce developer", "category": "Enterprise"},
+# Keywords to search via JSearch (LinkedIn/Indeed/Glassdoor)
+JSEARCH_KEYWORDS = [
+    ("Data Analyst", "Enterprise"),
+    (".NET Developer", "Enterprise"),
+    ("Java Developer", "Enterprise"),
+    ("ServiceNow Developer", "Enterprise"),
+    ("SAP Consultant", "Enterprise"),
+    ("Salesforce Developer", "Enterprise"),
+    ("Business Analyst", "Enterprise"),
+    ("Python Developer", "Big Tech"),
+    ("React Developer", "Big Tech"),
+    ("DevOps Engineer", "Big Tech"),
+    ("Machine Learning Engineer", "Big Tech"),
+    ("Cloud Engineer", "Big Tech"),
+    ("Full Stack Developer", "Big Tech"),
+    ("Data Engineer", "Big Tech"),
+    ("SQL Developer", "Enterprise"),
+    ("Power BI Developer", "Enterprise"),
+    ("Oracle Developer", "Enterprise"),
+    ("Software Engineer", "Big Tech"),
+    ("Product Manager", "Big Tech"),
+    ("UX Designer", "Big Tech"),
 ]
 
-# Adzuna API for enterprise jobs (free tier)
-ADZUNA_ID = ""   # Get free at developer.adzuna.com
-ADZUNA_KEY = ""  # Get free at developer.adzuna.com
-
 NON_USA = ["canada","toronto","vancouver","uk","london","india","bangalore","delhi",
-           "mumbai","hyderabad","germany","berlin","france","paris","australia",
-           "sydney","singapore","japan","tokyo","europe","emea","apac","korea","seoul"]
+           "mumbai","germany","berlin","france","paris","australia","sydney",
+           "singapore","japan","tokyo","europe","emea","apac","korea","seoul"]
 
 def is_usa(loc):
+    if not loc: return True
     return not any(c in loc.lower() for c in NON_USA)
 
 def detect_sponsorship(text):
     return any(k in text.lower() for k in
         ["sponsorship","h1b","h-1b","visa","work authorization","will sponsor",
-         "green card","authorize to work","immigration"])
+         "green card","authorize to work","immigration","ead","opt"])
 
 def detect_remote(text, loc=""):
     t = (text+" "+loc).lower()
-    if "fully remote" in t or "100% remote" in t: return "Remote"
+    if "fully remote" in t or "100% remote" in t or "work from home" in t: return "Remote"
     if "hybrid" in t: return "Hybrid"
     if "remote" in t: return "Remote"
     return "On-site"
@@ -120,7 +114,7 @@ def fetch_gh(cid, name, cat):
         r = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{cid}/jobs",
             params={"content":"true"}, headers=HEADERS, timeout=8)
         if r.status_code == 200:
-            for item in r.json().get("jobs",[])[:20]:
+            for item in r.json().get("jobs",[])[:15]:
                 loc = item.get("location",{}).get("name","United States")
                 if not is_usa(loc): continue
                 desc = BeautifulSoup(item.get("content",""),"html.parser").get_text(separator=" ")
@@ -132,10 +126,9 @@ def fetch_gh(cid, name, cat):
                     "salary": "Not listed", "job_type": "Full-time",
                     "remote_type": detect_remote(desc, loc),
                     "sponsorship": detect_sponsorship(desc),
-                    "description": desc,
-                    "apply_url": item.get("absolute_url",""),
+                    "description": desc, "apply_url": item.get("absolute_url",""),
                     "category": cat, "company_size": "Tech Company",
-                    "posted_at": updated,
+                    "posted_at": updated, "source": "greenhouse",
                 })
     except: pass
     return jobs
@@ -144,9 +137,9 @@ def fetch_lv(cid, name, cat):
     jobs = []
     try:
         r = requests.get(f"https://api.lever.co/v0/postings/{cid}",
-            params={"mode":"json","limit":20}, headers=HEADERS, timeout=8)
+            params={"mode":"json","limit":15}, headers=HEADERS, timeout=8)
         if r.status_code == 200:
-            for item in r.json()[:20]:
+            for item in r.json()[:15]:
                 loc = item.get("categories",{}).get("location","United States")
                 if not is_usa(loc): continue
                 desc = " ".join(item.get("descriptionPlain","").split())[:600]
@@ -158,46 +151,66 @@ def fetch_lv(cid, name, cat):
                     "salary": "Not listed", "job_type": "Full-time",
                     "remote_type": detect_remote(desc, loc),
                     "sponsorship": detect_sponsorship(desc),
-                    "description": desc,
-                    "apply_url": item.get("hostedUrl",""),
+                    "description": desc, "apply_url": item.get("hostedUrl",""),
                     "category": cat, "company_size": "Tech Company",
-                    "posted_at": posted,
+                    "posted_at": posted, "source": "lever",
                 })
     except: pass
     return jobs
 
-def fetch_usajobs(keyword, cat):
-    """Fetch from USAJobs API - free, no key needed for basic search."""
+def fetch_jsearch(keyword, category):
+    """Fetch from JSearch API - pulls from LinkedIn, Indeed, Glassdoor."""
     jobs = []
+    if not JSEARCH_KEY:
+        return jobs
     try:
-        r = requests.get("https://data.usajobs.gov/api/Search",
-            params={"Keyword": keyword, "LocationName": "United States", "ResultsPerPage": 10},
-            headers={**HEADERS, "Host":"data.usajobs.gov", "User-Agent":"jobhunter/1.0"},
-            timeout=8)
+        r = requests.get(
+            "https://jsearch.p.rapidapi.com/search",
+            headers={
+                "X-RapidAPI-Key": JSEARCH_KEY,
+                "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
+            },
+            params={
+                "query": f"{keyword} United States",
+                "page": "1",
+                "num_results": "10",
+                "date_posted": "week",
+                "country": "us",
+            },
+            timeout=10
+        )
         if r.status_code == 200:
-            items = r.json().get("SearchResult",{}).get("SearchResultItems",[])
-            for item in items:
-                pos = item.get("MatchedObjectDescriptor",{})
-                sal = pos.get("PositionRemuneration",[{}])[0]
-                loc_data = pos.get("PositionLocation",[{}])[0]
-                loc = loc_data.get("LocationName","United States")
-                salary = f"${sal.get('MinimumRange','?')} - ${sal.get('MaximumRange','?')}" if sal.get("MinimumRange") else "Not listed"
+            for item in r.json().get("data", []):
+                loc = f"{item.get('job_city','')}, {item.get('job_state','US')}".strip(", ")
+                if not is_usa(loc): continue
+                desc = item.get("job_description","")[:600]
+                salary = ""
+                if item.get("job_min_salary"):
+                    salary = f"${item['job_min_salary']:,.0f} - ${item.get('job_max_salary', item['job_min_salary']):,.0f}/yr"
+                # Parse posted date
+                posted_ts = item.get("job_posted_at_timestamp")
+                if posted_ts:
+                    posted = datetime.fromtimestamp(posted_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                else:
+                    posted = now_iso()
                 jobs.append({
-                    "id": hashlib.md5(f"{pos.get('PositionID','')}".encode()).hexdigest()[:12],
-                    "title": pos.get("PositionTitle",""),
-                    "company": pos.get("OrganizationName","US Government"),
-                    "location": loc,
-                    "salary": salary,
-                    "job_type": "Full-time",
-                    "remote_type": detect_remote(pos.get("QualificationSummary","")),
-                    "sponsorship": False,
-                    "description": pos.get("QualificationSummary","")[:600],
-                    "apply_url": pos.get("ApplyURI",[""])[0] if pos.get("ApplyURI") else "",
-                    "category": cat,
-                    "company_size": "Government",
-                    "posted_at": now_iso(),
+                    "id": hashlib.md5(f"{item.get('job_id','')}{keyword}".encode()).hexdigest()[:12],
+                    "title": item.get("job_title",""),
+                    "company": item.get("employer_name",""),
+                    "location": loc or "United States",
+                    "salary": salary or "Not listed",
+                    "job_type": item.get("job_employment_type","Full-time"),
+                    "remote_type": "Remote" if item.get("job_is_remote") else detect_remote(desc, loc),
+                    "sponsorship": detect_sponsorship(desc),
+                    "description": " ".join(desc.split()),
+                    "apply_url": item.get("job_apply_link",""),
+                    "category": category,
+                    "company_size": "Unknown",
+                    "posted_at": posted,
+                    "source": item.get("job_publisher","LinkedIn"),
                 })
-    except: pass
+    except Exception as e:
+        print(f"JSearch error for {keyword}: {e}")
     return jobs
 
 def get_all_jobs():
@@ -207,30 +220,31 @@ def get_all_jobs():
 
     all_jobs = []
 
-    # Fetch startup/tech companies in parallel
-    def fetch_company(c):
-        api, cid, name, cat = c
-        if api == "gh": return fetch_gh(cid, name, cat)
-        return fetch_lv(cid, name, cat)
-
+    # Fetch company boards in parallel
     with ThreadPoolExecutor(max_workers=10) as ex:
-        for result in ex.map(fetch_company, COMPANIES):
+        for result in ex.map(lambda c: fetch_gh(c[1],c[2],c[3]) if c[0]=="gh" else fetch_lv(c[1],c[2],c[3]), COMPANIES):
             all_jobs.extend(result)
 
-    # Fetch enterprise/government jobs for .NET, Java, ServiceNow etc
-    enterprise_keywords = [".NET", "Java Developer", "ServiceNow", "SAP", "Data Analyst",
-                          "Business Analyst", "Salesforce", "Oracle", "PowerBI", "Tableau"]
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futures = [ex.submit(fetch_usajobs, kw, "Enterprise") for kw in enterprise_keywords]
-        for f in futures:
-            try: all_jobs.extend(f.result())
-            except: pass
+    # Fetch keyword searches in parallel (only if JSearch key available)
+    if JSEARCH_KEY:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            for result in ex.map(lambda k: fetch_jsearch(k[0],k[1]), JSEARCH_KEYWORDS):
+                all_jobs.extend(result)
 
-    all_jobs.sort(key=lambda j: j.get("posted_at",""), reverse=True)
-    _cache["jobs"] = all_jobs
+    # Remove duplicates
+    seen = set()
+    unique = []
+    for j in all_jobs:
+        key = f"{j['title'].lower()}{j['company'].lower()}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(j)
+
+    unique.sort(key=lambda j: j.get("posted_at",""), reverse=True)
+    _cache["jobs"] = unique
     _cache["time"] = now
-    print(f"Cached {len(all_jobs)} jobs")
-    return all_jobs
+    print(f"Cached {len(unique)} unique jobs")
+    return unique
 
 @app.route("/api/jobs", methods=["GET"])
 def search_jobs():
@@ -242,9 +256,12 @@ def search_jobs():
     hours    = request.args.get("hours","")
     page     = int(request.args.get("page",1))
     per_page = int(request.args.get("per_page",20))
+
     jobs = get_all_jobs()
     if keyword:
-        jobs = [j for j in jobs if keyword in j["title"].lower() or keyword in j["company"].lower() or keyword in j["description"].lower()]
+        jobs = [j for j in jobs if keyword in j["title"].lower()
+                or keyword in j["company"].lower()
+                or keyword in j["description"].lower()]
     if location:
         jobs = [j for j in jobs if location in j["location"].lower()]
     if remote:
@@ -256,8 +273,11 @@ def search_jobs():
     if hours:
         try:
             cutoff = time.time()-(int(hours)*3600)
-            jobs = [j for j in jobs if datetime.fromisoformat(j["posted_at"]).replace(tzinfo=timezone.utc).timestamp()>=cutoff]
+            jobs = [j for j in jobs
+                    if datetime.fromisoformat(j["posted_at"])
+                    .replace(tzinfo=timezone.utc).timestamp() >= cutoff]
         except: pass
+
     total = len(jobs)
     start = (page-1)*per_page
     return jsonify({"total":total,"page":page,"per_page":per_page,"jobs":jobs[start:start+per_page]})
@@ -270,17 +290,17 @@ def stats():
         for cat in ["Big Tech","Startups","Healthcare","Finance","Enterprise"]:
             cats[cat] = len([j for j in jobs if j["category"]==cat])
         return jsonify({
-            "total_jobs":len(jobs),
-            "remote_jobs":len([j for j in jobs if "Remote" in j["remote_type"]]),
-            "sponsorship_jobs":len([j for j in jobs if j["sponsorship"]]),
-            "by_category":cats,
+            "total_jobs": len(jobs),
+            "remote_jobs": len([j for j in jobs if "Remote" in j["remote_type"]]),
+            "sponsorship_jobs": len([j for j in jobs if j["sponsorship"]]),
+            "by_category": cats,
         })
     except Exception as e:
         return jsonify({"total_jobs":0,"remote_jobs":0,"sponsorship_jobs":0,"by_category":{},"error":str(e)})
 
 @app.route("/api/health",methods=["GET"])
 def health():
-    return jsonify({"status":"ok","cached":len(_cache["jobs"])})
+    return jsonify({"status":"ok","cached":len(_cache["jobs"]),"jsearch":bool(JSEARCH_KEY)})
 
 @app.route("/",methods=["GET"])
 def home():
