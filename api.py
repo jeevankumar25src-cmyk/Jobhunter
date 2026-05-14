@@ -1,6 +1,7 @@
 """
-JobHunter AI - API v11
-Instant JSearch on demand. No background threads. No timeouts.
+JobHunter AI - API v12
+Uses Adzuna API (completely free, no credit card) for enterprise jobs.
++ Greenhouse/Lever for tech companies.
 """
 import requests, hashlib, time, os
 from datetime import datetime, timezone
@@ -17,27 +18,31 @@ HEADERS = {
     "Accept": "application/json",
 }
 
+# Adzuna - completely free, 250 calls/day, no credit card
+# Already registered: App ID and Key from developer.adzuna.com
+ADZUNA_ID  = os.getenv("ADZUNA_ID",  "")
+ADZUNA_KEY = os.getenv("ADZUNA_KEY", "")
+
+# JSearch as backup
 JSEARCH_KEY = os.getenv("JSEARCH_KEY", "8acef9867emshf21b10c7e42b5acp1cc495jsn8a75d9eeeda7")
 
-# Separate caches
 _company_cache = {"jobs": [], "time": 0}
-_jsearch_cache = {}  # keyword -> {jobs, time}
+_search_cache  = {}
 COMPANY_TTL = 300
-JSEARCH_TTL = 600
+SEARCH_TTL  = 600
 
 NON_USA = [
-    "canada","ontario","toronto","vancouver","montreal","british columbia","alberta",
-    "uk","united kingdom","england","london","manchester","birmingham",
+    "canada","ontario","toronto","vancouver","montreal",
+    "uk","united kingdom","england","london","manchester",
     "india","bangalore","bengaluru","delhi","mumbai","hyderabad","pune","chennai","kolkata","noida","gurgaon",
-    "germany","berlin","munich","frankfurt","hamburg",
-    "france","paris","lyon",
-    "australia","sydney","melbourne","brisbane",
-    "singapore","japan","tokyo","china","beijing","shanghai",
+    "germany","berlin","munich","france","paris",
+    "australia","sydney","melbourne","singapore",
+    "japan","tokyo","china","beijing","shanghai",
     "brazil","mexico","ireland","dublin","netherlands","amsterdam",
-    "sweden","spain","israel","poland","switzerland","denmark","finland",
-    "south korea","korea","seoul","philippines","pakistan","bangladesh",
+    "sweden","spain","israel","poland","switzerland",
+    "south korea","korea","seoul","philippines","pakistan",
     "nigeria","kenya","south africa","egypt","uae","dubai","saudi arabia",
-    "iran","iraq","russia","ukraine","vietnam","indonesia","malaysia","thailand",
+    "iran","iraq","russia","ukraine","vietnam","indonesia","malaysia",
     "europe","emea","apac","latam","worldwide","global",
 ]
 
@@ -50,8 +55,7 @@ def detect_sponsorship(text):
     t = text.lower()
     return any(k in t for k in [
         "h1b","h-1b","sponsorship","visa sponsor","will sponsor",
-        "work authorization","ead","opt","green card sponsor",
-        "authorize to work","immigration"
+        "work authorization","ead","opt","green card sponsor","authorize to work"
     ])
 
 def detect_remote(text, loc=""):
@@ -76,6 +80,7 @@ GH = [
     ("anthropic","Anthropic","Startups"),("gusto","Gusto","Startups"),
     ("airtable","Airtable","Startups"),("webflow","Webflow","Startups"),
     ("miro","Miro","Startups"),("lattice","Lattice","Startups"),
+    ("snyk","Snyk","Big Tech"),("vanta","Vanta","Startups"),
     ("chime","Chime","Finance"),("affirm","Affirm","Finance"),
     ("robinhood","Robinhood","Finance"),("coinbase","Coinbase","Finance"),
     ("marqeta","Marqeta","Finance"),
@@ -138,18 +143,74 @@ def fetch_lv(cid, name, cat):
     except: pass
     return jobs
 
-def jsearch(keyword, category, num=10):
-    """Search JSearch API for a keyword. Cached per keyword."""
+def search_adzuna(keyword, category):
+    """Adzuna API - free 250 calls/day, great for enterprise jobs."""
+    cache_key = f"adzuna_{keyword}"
     now = time.time()
-    if keyword in _jsearch_cache and (now - _jsearch_cache[keyword]["time"]) < JSEARCH_TTL:
-        return _jsearch_cache[keyword]["jobs"]
+    if cache_key in _search_cache and (now - _search_cache[cache_key]["time"]) < SEARCH_TTL:
+        return _search_cache[cache_key]["jobs"]
     jobs = []
+    if not ADZUNA_ID or not ADZUNA_KEY:
+        return jobs
+    try:
+        r = requests.get(
+            f"https://api.adzuna.com/v1/api/jobs/us/search/1",
+            params={
+                "app_id": ADZUNA_ID,
+                "app_key": ADZUNA_KEY,
+                "what": keyword,
+                "where": "United States",
+                "results_per_page": 15,
+                "content-type": "application/json",
+                "sort_by": "date",
+            },
+            timeout=10
+        )
+        if r.status_code == 200:
+            for item in r.json().get("results",[]):
+                loc = item.get("location",{}).get("display_name","United States")
+                if not is_usa(loc): continue
+                desc = item.get("description","")
+                sal_min = item.get("salary_min",0)
+                sal_max = item.get("salary_max",0)
+                salary = f"${sal_min:,.0f} - ${sal_max:,.0f}/yr" if sal_min else "Not listed"
+                created = item.get("created","")
+                posted = created[:19].replace("T"," ").replace(" ","T") if created else now_iso()
+                jobs.append({
+                    "id": hashlib.md5(f"{item.get('id','')}{keyword}".encode()).hexdigest()[:12],
+                    "title": item.get("title",""),
+                    "company": item.get("company",{}).get("display_name",""),
+                    "location": loc,
+                    "salary": salary,
+                    "job_type": "Full-time",
+                    "remote_type": detect_remote(desc, loc),
+                    "sponsorship": detect_sponsorship(desc),
+                    "description": " ".join(desc.split())[:600],
+                    "apply_url": item.get("redirect_url",""),
+                    "category": category,
+                    "posted_at": posted,
+                })
+        else:
+            print(f"Adzuna {keyword}: HTTP {r.status_code}")
+    except Exception as e:
+        print(f"Adzuna error: {e}")
+    _search_cache[cache_key] = {"jobs": jobs, "time": now}
+    return jobs
+
+def search_jsearch(keyword, category):
+    """JSearch - LinkedIn/Indeed/Glassdoor."""
+    cache_key = f"js_{keyword}"
+    now = time.time()
+    if cache_key in _search_cache and (now - _search_cache[cache_key]["time"]) < SEARCH_TTL:
+        return _search_cache[cache_key]["jobs"]
+    jobs = []
+    if not JSEARCH_KEY: return jobs
     try:
         r = requests.get(
             "https://jsearch.p.rapidapi.com/search",
             headers={"X-RapidAPI-Key": JSEARCH_KEY, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
-            params={"query": f"{keyword} USA", "page":"1", "num_results":str(num),
-                    "date_posted":"week", "country":"us"},
+            params={"query": f"{keyword} United States", "page":"1",
+                    "num_results":"15", "date_posted":"month", "country":"us"},
             timeout=12
         )
         if r.status_code == 200:
@@ -163,10 +224,7 @@ def jsearch(keyword, category, num=10):
                 mn = item.get("job_min_salary")
                 mx = item.get("job_max_salary", mn)
                 period = item.get("job_salary_period","YEAR")
-                if mn:
-                    salary = f"${mn:.0f} - ${mx:.0f}/{'hr' if period=='HOUR' else 'yr'}"
-                else:
-                    salary = "Not listed"
+                salary = f"${mn:.0f} - ${mx:.0f}/{'hr' if period=='HOUR' else 'yr'}" if mn else "Not listed"
                 ts = item.get("job_posted_at_timestamp")
                 posted = datetime.fromtimestamp(ts,tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") if ts else now_iso()
                 jobs.append({
@@ -185,10 +243,50 @@ def jsearch(keyword, category, num=10):
                 })
         elif r.status_code == 429:
             print("JSearch rate limit")
+        else:
+            print(f"JSearch {keyword}: HTTP {r.status_code}")
     except Exception as e:
         print(f"JSearch error: {e}")
-    _jsearch_cache[keyword] = {"jobs": jobs, "time": now}
+    _search_cache[cache_key] = {"jobs": jobs, "time": now}
     return jobs
+
+def get_extra_jobs(keyword, category):
+    """Try Adzuna first, then JSearch as fallback."""
+    jobs = search_adzuna(keyword, category)
+    if not jobs:
+        jobs = search_jsearch(keyword, category)
+    return jobs
+
+KEYWORD_MAP = {
+    "data analyst": ("Data Analyst", "Enterprise"),
+    "business analyst": ("Business Analyst", "Enterprise"),
+    ".net": (".NET Developer", "Enterprise"),
+    "c#": ("C# .NET Developer", "Enterprise"),
+    "java": ("Java Developer", "Enterprise"),
+    "servicenow": ("ServiceNow Developer", "Enterprise"),
+    "sap": ("SAP Consultant", "Enterprise"),
+    "salesforce": ("Salesforce Developer", "Enterprise"),
+    "power bi": ("Power BI Developer", "Enterprise"),
+    "powerbi": ("Power BI Developer", "Enterprise"),
+    "sql": ("SQL Developer", "Enterprise"),
+    "oracle": ("Oracle Developer", "Enterprise"),
+    "etl": ("ETL Developer", "Enterprise"),
+    "python": ("Python Developer", "Big Tech"),
+    "react": ("React Developer", "Big Tech"),
+    "angular": ("Angular Developer", "Big Tech"),
+    "devops": ("DevOps Engineer", "Big Tech"),
+    "cloud": ("Cloud Engineer", "Big Tech"),
+    "aws": ("AWS Cloud Engineer", "Big Tech"),
+    "azure": ("Azure Developer", "Big Tech"),
+    "machine learning": ("Machine Learning Engineer", "Big Tech"),
+    "data engineer": ("Data Engineer", "Big Tech"),
+    "full stack": ("Full Stack Developer", "Big Tech"),
+    "node": ("Node.js Developer", "Big Tech"),
+    "cybersecurity": ("Cybersecurity Analyst", "Enterprise"),
+    "product manager": ("Product Manager", "Big Tech"),
+    "software engineer": ("Software Engineer", "Big Tech"),
+    "software developer": ("Software Developer", "Big Tech"),
+}
 
 def get_company_jobs():
     now = time.time()
@@ -206,44 +304,6 @@ def get_company_jobs():
     _company_cache["time"] = now
     return jobs
 
-# Map keywords to JSearch queries
-KEYWORD_MAP = {
-    "data analyst": ("Data Analyst", "Enterprise"),
-    "business analyst": ("Business Analyst", "Enterprise"),
-    ".net": (".NET Developer", "Enterprise"),
-    "c#": ("C# Developer", "Enterprise"),
-    "java": ("Java Developer", "Enterprise"),
-    "servicenow": ("ServiceNow Developer", "Enterprise"),
-    "sap": ("SAP Consultant", "Enterprise"),
-    "salesforce": ("Salesforce Developer", "Enterprise"),
-    "power bi": ("Power BI Developer", "Enterprise"),
-    "powerbi": ("Power BI Developer", "Enterprise"),
-    "sql": ("SQL Developer", "Enterprise"),
-    "oracle": ("Oracle Developer", "Enterprise"),
-    "etl": ("ETL Developer", "Enterprise"),
-    "python": ("Python Developer", "Big Tech"),
-    "react": ("React Developer", "Big Tech"),
-    "angular": ("Angular Developer", "Big Tech"),
-    "devops": ("DevOps Engineer", "Big Tech"),
-    "cloud": ("Cloud Engineer", "Big Tech"),
-    "aws": ("AWS Engineer", "Big Tech"),
-    "azure": ("Azure Developer", "Big Tech"),
-    "machine learning": ("Machine Learning Engineer", "Big Tech"),
-    "ml": ("Machine Learning Engineer", "Big Tech"),
-    "data engineer": ("Data Engineer", "Big Tech"),
-    "full stack": ("Full Stack Developer", "Big Tech"),
-    "node": ("Node.js Developer", "Big Tech"),
-    "cybersecurity": ("Cybersecurity Analyst", "Enterprise"),
-    "security": ("Security Engineer", "Enterprise"),
-    "product manager": ("Product Manager", "Big Tech"),
-    "ux": ("UX Designer", "Big Tech"),
-    "jpmorgan": ("Software Engineer JPMorgan", "Finance"),
-    "bank of america": ("Data Analyst Bank of America", "Finance"),
-    "amazon": ("Software Engineer Amazon", "Big Tech"),
-    "microsoft": ("Software Engineer Microsoft", "Big Tech"),
-    "google": ("Software Engineer Google", "Big Tech"),
-}
-
 @app.route("/api/jobs", methods=["GET"])
 def search_jobs():
     keyword  = request.args.get("keyword","").lower().strip()
@@ -255,33 +315,30 @@ def search_jobs():
     page     = int(request.args.get("page",1))
     per_page = int(request.args.get("per_page",20))
 
-    # Get company jobs (fast, cached)
-    jobs = get_company_jobs().copy()
+    company_jobs = get_company_jobs().copy()
+    extra_jobs = []
 
-    # If keyword matches a JSearch query, fetch those too
-    jsearch_jobs = []
-    if keyword and JSEARCH_KEY:
-        # Find best matching JSearch query
-        for kw, (query, cat) in KEYWORD_MAP.items():
-            if kw in keyword or keyword in kw:
-                print(f"JSearch triggered for: {query}")
-                jsearch_jobs = jsearch(query, cat, num=15)
+    # Get extra jobs from Adzuna/JSearch when keyword is searched
+    if keyword:
+        query, cat = None, "Enterprise"
+        for kw, (q, c) in KEYWORD_MAP.items():
+            if kw in keyword:
+                query, cat = q, c
                 break
-        # If no exact match, search JSearch directly with the keyword
-        if not jsearch_jobs:
-            jsearch_jobs = jsearch(keyword, "Enterprise", num=10)
+        if not query:
+            query = keyword
+        extra_jobs = get_extra_jobs(query, cat)
 
     # Merge and dedupe
-    all_jobs = jobs + jsearch_jobs
-    seen, unique = set(), []
+    all_jobs = company_jobs + extra_jobs
+    seen, jobs = set(), []
     for j in all_jobs:
         key = f"{j['title'].lower()[:25]}{j['company'].lower()[:15]}"
         if key not in seen:
             seen.add(key)
-            unique.append(j)
-    jobs = unique
+            jobs.append(j)
 
-    # Apply filters
+    # Filters
     if keyword:
         jobs = [j for j in jobs if
                 keyword in j["title"].lower() or
@@ -321,15 +378,20 @@ def stats():
             "by_category": cats,
         })
     except Exception as e:
-        return jsonify({"total_jobs":0,"remote_jobs":0,"sponsorship_jobs":0,"by_category":{},"error":str(e)})
+        return jsonify({"error":str(e),"total_jobs":0,"remote_jobs":0,"sponsorship_jobs":0,"by_category":{}})
 
 @app.route("/api/health",methods=["GET"])
 def health():
-    return jsonify({"status":"ok","company_jobs":len(_company_cache["jobs"]),"jsearch":bool(JSEARCH_KEY)})
+    return jsonify({
+        "status":"ok",
+        "company_jobs":len(_company_cache["jobs"]),
+        "adzuna":bool(ADZUNA_ID),
+        "jsearch":bool(JSEARCH_KEY)
+    })
 
 @app.route("/",methods=["GET"])
 def home():
-    return jsonify({"message":"JobHunter AI USA","company_jobs":len(_company_cache["jobs"])})
+    return jsonify({"message":"JobHunter AI USA","jobs":len(_company_cache["jobs"])})
 
 if __name__ == "__main__":
     app.run(debug=True,host="0.0.0.0",port=5000)
