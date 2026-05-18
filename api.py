@@ -389,6 +389,38 @@ def health():
         "jsearch":bool(JSEARCH_KEY)
     })
 
+@app.route("/api/test-models",methods=["GET"])
+def test_models():
+    """Test which Claude models are available with the current API key."""
+    api_key = os.getenv("ANTHROPIC_API_KEY","")
+    if not api_key:
+        return jsonify({"error":"No API key set"})
+    results = {}
+    models_to_try = [
+        "claude-3-haiku-20240307",
+        "claude-3-sonnet-20240229",
+        "claude-3-opus-20240229",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+    ]
+    import requests as req_lib
+    for model in models_to_try:
+        try:
+            r = req_lib.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key":api_key,"anthropic-version":"2023-06-01","content-type":"application/json"},
+                json={"model":model,"max_tokens":10,"messages":[{"role":"user","content":"Hi"}]},
+                timeout=15
+            )
+            results[model] = f"HTTP {r.status_code}"
+            if r.status_code != 200:
+                err = r.json().get("error",{}).get("message","")[:80]
+                results[model] += f" - {err}"
+        except Exception as e:
+            results[model] = f"Error: {str(e)[:50]}"
+    return jsonify(results)
+
 @app.route("/",methods=["GET"])
 def home():
     return jsonify({"message":"JobHunter AI USA","jobs":len(_company_cache["jobs"])})
@@ -451,7 +483,7 @@ OUTPUT: First line=SCORE: XX%, then blank line, then plain text resume. NO HTML.
                 "content-type": "application/json"
             },
             json={
-                "model": "claude-3-haiku-20240307",
+                "model": "claude-3-sonnet-20240229",
                 "max_tokens": 4000,
                 "messages": [{"role": "user", "content": prompt}]
             },
