@@ -418,90 +418,53 @@ def optimize_resume():
 
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
         if not api_key:
-            return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 500
-
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+            return jsonify({"error": "ANTHROPIC_API_KEY not set on server — add it in Render Environment"}), 500
 
         prompt = f"""You are an expert ATS resume writer with 15 years experience. Generate a perfectly tailored, 100% ATS-optimized resume following every rule below EXACTLY.
 
-===SOURCE RESUME (master data - use only this for personal details, companies, dates)===
+===SOURCE RESUME===
 {resume[:3000]}
 
 ===TARGET JOB DESCRIPTION===
 {jd[:2000]}
 
-===STRICT RULES - FOLLOW EVERY ONE===
+===RULES===
+PERSONAL (never change): Name: JEEVAN KUMAR N | Contact: Denton, Texas | (940) 595-8405 | jeevankumar25src@gmail.com | LinkedIn | GitHub
+COMPANIES (never change): Vanguard, Bank of America, LatentView Analytics — keep exact dates
+LOCATION: Remote=Denton Texas, On-site/Hybrid=JD location
+SUMMARY: 3 sentences, open with EXACT job title from JD, keyword-rich
+TECH PIVOT: If JD needs different tech, pivot summary+skills+titles+ALL bullets
+BULLETS: Vanguard=6-8, Bank of America=5-6, LatentView=5-6. Use action verbs. Quantify.
+BOLD: In every bullet, wrap every JD keyword with **word** bold markers
+SKILLS FORMAT: • **Category:** skill1, skill2, skill3
+CERTIFICATIONS: Google Data Analytics Professional Certificate + Microsoft Certified: Power BI Data Analyst Associate only
+EDUCATION: • University of North Texas — M.S. Information Systems & Technology | May 2025
+OUTPUT: First line=SCORE: XX%, then blank line, then plain text resume. NO HTML."""
 
-PERSONAL INFO (never change any of this):
-- Name: JEEVAN KUMAR N
-- Contact line: Denton, Texas | (940) 595-8405 | jeevankumar25src@gmail.com | LinkedIn | GitHub
-
-COMPANIES & DATES (never change):
-- Vanguard — keep exact dates from source resume
-- Bank of America — keep exact dates from source resume
-- LatentView Analytics — keep exact dates from source resume
-
-LOCATION RULE:
-- If position is Remote → write "Denton, Texas"
-- If On-site or Hybrid → use location from job description
-
-PROFESSIONAL SUMMARY:
-- Write 3 new sentences perfectly aligned to this specific JD
-- First sentence MUST open with the EXACT job title from the JD
-- Must be keyword-rich and match the role requirements
-
-TECH STACK PIVOTING:
-- If JD requires different technology (e.g., JD needs .NET/C# but resume shows Python) → PIVOT COMPLETELY
-- Change job titles, summary, skills, and ALL bullet points to reflect required tech
-- Add adjacent/expected skills (Java role → also add Spring Boot, Spring Security, JUnit, Mockito, Maven, Gradle)
-- (.NET role → add ASP.NET Core, C#, Entity Framework, Azure DevOps, NUnit)
-
-BULLET POINTS (critical):
-- Vanguard (current/most recent role): Write exactly 6-8 bullets
-- Bank of America: Write exactly 5-6 bullets
-- LatentView Analytics: Write exactly 5-6 bullets
-- Each bullet reflects JD responsibilities, technologies, keywords
-- Start every bullet with strong action verb (Led, Built, Designed, Implemented, Optimized, Delivered, Architected)
-- Include quantified achievements where possible
-
-KEYWORD BOLDING (CRITICAL - do for ALL 3 experience sections):
-- In EVERY bullet point, wrap each JD technology/tool/keyword with **bold** markers
-- Example: "Developed **Python** and **SQL** pipelines using **Snowflake** and **AWS**"
-- Bold EVERY relevant keyword in every single bullet
-
-TECHNICAL SKILLS FORMAT:
-- Each category on its own line starting with •
-- Only the category label is bold
-- Exact format: • **Category Name:** skill1, skill2, skill3
-- Skills must align with JD. Add adjacent skills an expert would have.
-
-CERTIFICATIONS (default - only add others if directly relevant):
-- Google Data Analytics Professional Certificate
-- Microsoft Certified: Power BI Data Analyst Associate
-
-EDUCATION (exact, never change):
-- University of North Texas — M.S. Information Systems & Technology | May 2025
-
-OUTPUT FORMAT (strict - follow exactly):
-- FIRST LINE ONLY: SCORE: XX% (your estimated ATS match percentage after optimization)
-- Then one blank line
-- Then the complete resume as clean plain text
-- NO HTML tags anywhere in the output
-- Name on its own line in ALL CAPS
-- Contact info on the very next line
-- Section headers in ALL CAPS (no asterisks/bold markers on headers)
-- Skills use • bullet with **bold category**
-- Experience bullets use • bullet format
-- Keep to one page - be concise but comprehensive"""
-
-        msg = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
+        # Use requests to call Anthropic API directly (avoids SDK version issues)
+        import requests as req_lib
+        resp = req_lib.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 4000,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=120
         )
-        result_text = msg.content[0].text
-        return jsonify({"result": result_text})
+
+        if resp.status_code != 200:
+            err = resp.json().get("error", {}).get("message", resp.text[:200])
+            print(f"Anthropic API error {resp.status_code}: {err}")
+            return jsonify({"error": f"AI API error: {err}"}), 500
+
+        result = resp.json()["content"][0]["text"]
+        return jsonify({"result": result})
 
     except Exception as e:
         error_msg = str(e)
