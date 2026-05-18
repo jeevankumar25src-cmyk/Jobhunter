@@ -469,7 +469,32 @@ BOLD: In every bullet, wrap every JD keyword with **word** bold markers
 SKILLS FORMAT: • **Category:** skill1, skill2, skill3
 CERTIFICATIONS: Google Data Analytics Professional Certificate + Microsoft Certified: Power BI Data Analyst Associate only
 EDUCATION: • University of North Texas — M.S. Information Systems & Technology | May 2025
-OUTPUT: First line=SCORE: XX%, then blank line, then plain text resume. NO HTML."""
+OUTPUT: First line ONLY=SCORE: XX%, then blank line, then resume in EXACT structure below.
+
+Use this EXACT format:
+JEEVAN KUMAR N
+[contact line with | separators]
+
+PROFESSIONAL SUMMARY
+[3 sentences]
+
+TECHNICAL SKILLS
+• **Category:** skill1, skill2
+
+PROFESSIONAL EXPERIENCE
+
+Company Name | Month YYYY – Month YYYY
+Job Title
+• bullet with **bold keywords**
+
+[repeat for each job]
+
+EDUCATION & CERTIFICATIONS
+• University of North Texas — M.S. Information Systems & Technology | May 2025
+• Google Data Analytics Professional Certificate
+• Microsoft Certified: Power BI Data Analyst Associate
+
+Use | between company name and dates. Use | in contact line. ONE PAGE ONLY. No HTML."""
 
         # Models available on this account (Claude 4.x series)
         models_to_try = [
