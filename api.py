@@ -397,12 +397,11 @@ def test_models():
         return jsonify({"error":"No API key set"})
     results = {}
     models_to_try = [
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-5-20250929",
+        "claude-opus-4-5-20251101",
         "claude-3-haiku-20240307",
-        "claude-3-sonnet-20240229",
-        "claude-3-opus-20240229",
-        "claude-3-5-sonnet-20240620",
         "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-20241022",
     ]
     import requests as req_lib
     for model in models_to_try:
@@ -472,13 +471,11 @@ CERTIFICATIONS: Google Data Analytics Professional Certificate + Microsoft Certi
 EDUCATION: • University of North Texas — M.S. Information Systems & Technology | May 2025
 OUTPUT: First line=SCORE: XX%, then blank line, then plain text resume. NO HTML."""
 
-        # Try models in order until one works
+        # Models available on this account (Claude 4.x series)
         models_to_try = [
-            "claude-3-haiku-20240307",
-            "claude-3-5-haiku-20241022",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-sonnet-20240229",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-5-20251101",
         ]
 
         import requests as req_lib
