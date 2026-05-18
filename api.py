@@ -395,3 +395,50 @@ def home():
 
 if __name__ == "__main__":
     app.run(debug=True,host="0.0.0.0",port=5000)
+
+
+@app.route("/api/optimize-resume", methods=["POST", "OPTIONS"])
+def optimize_resume():
+    if request.method == "OPTIONS":
+        return "", 200
+    try:
+        body = request.get_json()
+        resume = body.get("resume", "")
+        jd = body.get("jd", "")
+        if not resume or not jd:
+            return jsonify({"error": "Missing resume or jd"}), 400
+
+        import anthropic
+        client = anthropic.Anthropic()
+        prompt = f"""You are an expert ATS resume writer. Generate a perfectly tailored 100% ATS-friendly resume.
+
+SOURCE RESUME:
+{resume[:3000]}
+
+TARGET JOB DESCRIPTION:
+{jd[:2000]}
+
+STRICT RULES:
+- Name: JEEVAN KUMAR N (never change)
+- Contact: Denton, Texas | (940) 595-8405 | jeevankumar25src@gmail.com | LinkedIn | GitHub
+- Keep Vanguard, Bank of America, LatentView Analytics with exact dates
+- Location: Remote = "Denton, Texas", On-site/Hybrid = location from JD
+- Write new 3-sentence summary opening with exact JD job title
+- If JD needs different tech stack, PIVOT completely (summary, skills, job titles, bullets)
+- Vanguard: 6-8 bullets. Bank of America: 5-6 bullets. LatentView: 5-6 bullets
+- Bold every JD keyword in bullets using **word** syntax
+- Skills: bullet • **Category:** skill1, skill2
+- Certifications: only Google Data Analytics Professional Certificate + Microsoft Certified: Power BI Data Analyst Associate
+- Education: University of North Texas — M.S. Information Systems & Technology | May 2025
+- Output ONLY plain text, no HTML
+- First line: SCORE: XX%
+- Then the complete resume"""
+
+        msg = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return jsonify({"result": msg.content[0].text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
