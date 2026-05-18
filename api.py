@@ -410,8 +410,7 @@ def test_models():
             r = req_lib.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key":api_key,"anthropic-version":"2023-06-01","content-type":"application/json"},
-                json={"model":model,"max_tokens":10,"messages":[{"role":"user","content":"Hi"}]},
-                timeout=15
+                json={"model":model,"max_tokens":10,"messages":[{"role":"user","content":"Hi"}]},                timeout=15
             )
             results[model] = f"HTTP {r.status_code}"
             if r.status_code != 200:
@@ -473,30 +472,50 @@ CERTIFICATIONS: Google Data Analytics Professional Certificate + Microsoft Certi
 EDUCATION: • University of North Texas — M.S. Information Systems & Technology | May 2025
 OUTPUT: First line=SCORE: XX%, then blank line, then plain text resume. NO HTML."""
 
-        # Use requests to call Anthropic API directly (avoids SDK version issues)
+        # Try models in order until one works
+        models_to_try = [
+            "claude-3-haiku-20240307",
+            "claude-3-5-haiku-20241022",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-sonnet-20240620",
+            "claude-3-sonnet-20240229",
+        ]
+
         import requests as req_lib
-        resp = req_lib.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-3-sonnet-20240229",
-                "max_tokens": 4000,
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=120
-        )
+        result_text = None
+        last_error = None
 
-        if resp.status_code != 200:
-            err = resp.json().get("error", {}).get("message", resp.text[:200])
-            print(f"Anthropic API error {resp.status_code}: {err}")
-            return jsonify({"error": f"AI API error: {err}"}), 500
+        for model_name in models_to_try:
+            resp = req_lib.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                    "anthropic-beta": "messages-2023-12-15"
+                },
+                json={
+                    "model": model_name,
+                    "max_tokens": 4000,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=120
+            )
+            if resp.status_code == 200:
+                result_text = resp.json()["content"][0]["text"]
+                print(f"Success with model: {model_name}")
+                break
+            else:
+                err = resp.json().get("error", {}).get("message", resp.text[:100])
+                last_error = f"{model_name}: HTTP {resp.status_code} - {err}"
+                print(f"Failed {model_name}: {last_error}")
+                if resp.status_code not in [404, 400]:
+                    break  # Don't retry on auth errors
 
-        result = resp.json()["content"][0]["text"]
-        return jsonify({"result": result})
+        if not result_text:
+            return jsonify({"error": f"All models failed. Last error: {last_error}"}), 500
+
+        return jsonify({"result": result_text})
 
     except Exception as e:
         error_msg = str(e)
