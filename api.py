@@ -451,7 +451,7 @@ OUTPUT: First line=SCORE: XX%, then blank line, then plain text resume. NO HTML.
                 "content-type": "application/json"
             },
             json={
-                "model": "claude-3-5-sonnet-20241022",
+                "model": "claude-3-5-sonnet-20240620",
                 "max_tokens": 4000,
                 "messages": [{"role": "user", "content": prompt}]
             },
